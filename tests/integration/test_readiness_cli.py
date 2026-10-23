@@ -142,3 +142,215 @@ def test_readiness_cli_fails_closed_on_partial_drill_reports(
     assert payload["readiness"]["status"] == "TARGET_BLOCKED"
     assert payload["readiness"]["loadable"] is False
     assert "missing drill reports" in payload["drill"]["detail"]
+
+
+def test_readiness_cli_rejects_drill_report_version_mismatch(
+    tmp_path,
+    capsys,
+) -> None:
+    pytest.importorskip("torch")
+    source = _source_dcp(tmp_path)
+    before = _tree_digest(source)
+    report = tmp_path / "rank0.json"
+    write_target_ready_report(
+        model_loaded=True,
+        optimizer_loaded=True,
+        steps_ran=2,
+        migration_uid=source.name,
+        version="mismatched-version",
+        rank=0,
+        path=report,
+    )
+
+    result = main(
+        [
+            "readiness",
+            "--checkpoint",
+            str(source),
+            "--drill-report",
+            str(report),
+            "--json",
+        ]
+    )
+    assert result == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "failed"
+    assert payload["error"]["code"] == "DRILL_REPORT_INVALID"
+    assert (
+        "report version 'mismatched-version' does not match checkpoint"
+        in payload["error"]["message"]
+    )
+    assert "readiness" not in payload
+    assert _tree_digest(source) == before
+
+
+def test_readiness_cli_rejects_drill_report_migration_uid_mismatch(
+    tmp_path,
+    capsys,
+) -> None:
+    pytest.importorskip("torch")
+    source = _source_dcp(tmp_path)
+    before = _tree_digest(source)
+    report = tmp_path / "rank0.json"
+    write_target_ready_report(
+        model_loaded=True,
+        optimizer_loaded=True,
+        steps_ran=2,
+        migration_uid="mismatched-uid",
+        version=source.name,
+        rank=0,
+        path=report,
+    )
+
+    result = main(
+        [
+            "readiness",
+            "--checkpoint",
+            str(source),
+            "--drill-report",
+            str(report),
+            "--json",
+        ]
+    )
+    assert result == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "failed"
+    assert payload["error"]["code"] == "DRILL_REPORT_INVALID"
+    assert (
+        "report migrationUID 'mismatched-uid' does not match checkpoint"
+        in payload["error"]["message"]
+    )
+    assert "readiness" not in payload
+    assert _tree_digest(source) == before
+
+
+def test_readiness_cli_rejects_duplicate_rank_drill_reports(
+    tmp_path,
+    capsys,
+) -> None:
+    pytest.importorskip("torch")
+    source = _source_dcp(tmp_path)
+    before = _tree_digest(source)
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    write_target_ready_report(
+        model_loaded=True,
+        optimizer_loaded=True,
+        steps_ran=2,
+        migration_uid=source.name,
+        version=source.name,
+        rank=0,
+        path=reports / "rank0_a.json",
+    )
+    write_target_ready_report(
+        model_loaded=True,
+        optimizer_loaded=True,
+        steps_ran=2,
+        migration_uid=source.name,
+        version=source.name,
+        rank=0,
+        path=reports / "rank0_b.json",
+    )
+
+    result = main(
+        [
+            "readiness",
+            "--checkpoint",
+            str(source),
+            "--drill-report",
+            str(reports),
+            "--json",
+        ]
+    )
+    assert result == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "failed"
+    assert payload["error"]["code"] == "DRILL_REPORT_INVALID"
+    assert payload["error"]["message"] == "duplicate drill report for rank 0"
+    assert "readiness" not in payload
+    assert _tree_digest(source) == before
+
+
+def test_readiness_cli_rejects_malformed_json_drill_report(
+    tmp_path,
+    capsys,
+) -> None:
+    pytest.importorskip("torch")
+    source = _source_dcp(tmp_path)
+    before = _tree_digest(source)
+    report = tmp_path / "malformed.json"
+    report.write_text("{malformed json content: ", encoding="utf-8")
+
+    result = main(
+        [
+            "readiness",
+            "--checkpoint",
+            str(source),
+            "--drill-report",
+            str(report),
+            "--json",
+        ]
+    )
+    assert result == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "failed"
+    assert payload["error"]["code"] == "DRILL_REPORT_INVALID"
+    assert f"could not read drill report {report}" in payload["error"]["message"]
+    assert "readiness" not in payload
+    assert _tree_digest(source) == before
+
+
+def test_readiness_cli_rejects_nonexistent_drill_report_path(
+    tmp_path,
+    capsys,
+) -> None:
+    pytest.importorskip("torch")
+    source = _source_dcp(tmp_path)
+    before = _tree_digest(source)
+    nonexistent = tmp_path / "nonexistent.json"
+
+    result = main(
+        [
+            "readiness",
+            "--checkpoint",
+            str(source),
+            "--drill-report",
+            str(nonexistent),
+            "--json",
+        ]
+    )
+    assert result == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "failed"
+    assert payload["error"]["code"] == "DRILL_REPORT_INVALID"
+    assert f"drill report path not found: {nonexistent}" in payload["error"]["message"]
+    assert "readiness" not in payload
+    assert _tree_digest(source) == before
+
+
+def test_readiness_cli_rejects_drill_report_plain_text_error(
+    tmp_path,
+    capsys,
+) -> None:
+    pytest.importorskip("torch")
+    source = _source_dcp(tmp_path)
+    before = _tree_digest(source)
+    nonexistent = tmp_path / "nonexistent.json"
+
+    result = main(
+        [
+            "readiness",
+            "--checkpoint",
+            str(source),
+            "--drill-report",
+            str(nonexistent),
+        ]
+    )
+    assert result == 2
+    captured = capsys.readouterr()
+    assert (
+        f"readiness: DRILL_REPORT_INVALID: drill report path not found: {nonexistent}"
+        in captured.err
+    )
+    assert "READY" not in captured.out
+    assert _tree_digest(source) == before

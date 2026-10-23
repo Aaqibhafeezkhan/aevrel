@@ -291,8 +291,8 @@ release/upgrade/rollback/support bundle。
 
 ## 9. 当前状态与下一步
 
-已完成：0.1 static DCP 数据面；0.2-rc.1 控制面、target-ready 和局部
-cross-mesh；`CheckpointRecord` 多 agent selector/128-rank 合并；
+已完成：static DCP 数据面；控制面、target-ready 和局部 cross-mesh；
+`CheckpointRecord` 多 agent selector/128-rank 合并；
 `RestoreDrill` 自动 Indexed Job 与 version+digest 绑定 proof；
 `RescueDecision` 通用 K8s Warning event 入口；LRS CPU4 前置和
 torchcomms probe；本地 rescue demo、进度 UX 和 LRS 用户流程。

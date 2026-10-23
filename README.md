@@ -49,9 +49,9 @@ reimplementing them.
 
 ## Status
 
-`0.2.0-rc.1` is a source-only candidate. The last published release is `0.1.1`.
-The local CPU path and control-plane contracts are usable, but real Kubernetes,
-multi-node, and GPU validation remain release gates.
+`0.2.0` is the current release. The local CPU path and control-plane contracts
+are usable, but real Kubernetes, multi-node, and GPU validation remain
+environment-specific.
 
 - No production SLA.
 - Source checkpoint trees are read-only.
@@ -82,16 +82,16 @@ truth.
 
 ## Install
 
-For the current source candidate:
+For development from source:
 
 ```bash
 python -m pip install -e ".[dev]"
 ```
 
-For the last published release, install the wheel from the release assets:
+For the published release, install the wheel from the release assets:
 
 ```bash
-python -m pip install shardferry-0.1.1-py3-none-any.whl
+python -m pip install shardferry-0.2.0-py3-none-any.whl
 ```
 
 ## Quick start
@@ -247,7 +247,7 @@ docs/                 current product, usage, operator and integration docs
 - [Support](docs/SUPPORT.zh-CN.md)
 - [Helm installation](deploy/helm/shardferry/README.zh-CN.md)
 - [Checkpoint control-plane example](examples/checkpoint-control/README.zh-CN.md)
-- [Release notes](docs/RELEASE-NOTES-0.2.0-rc.1.md)
+- [Release notes](docs/RELEASE-NOTES-0.2.0.md)
 - [Changelog](CHANGELOG.md)
 
 ## Community and governance

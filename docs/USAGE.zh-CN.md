@@ -1,7 +1,7 @@
 # shardferry 使用场景与验收口径
 
-日期：2026-10-22  
-适用版本：`0.2.0-rc.1` candidate
+日期：2026-10-23
+适用版本：`0.2.0`
 
 ## 1. 先做一个判断
 
@@ -147,8 +147,8 @@ source 原目录（只读）
 + output DCP
 ```
 
-长时间训练 checkpoint 可能远大于 demo。`v0.1.1` 的 `doctor` 还没有做精确空间
-预估，真实大 checkpoint 前应先手工确认挂载点剩余空间。
+长时间训练 checkpoint 可能远大于 demo。当前 `doctor` 的磁盘预估仍是
+近似值，真实大 checkpoint 前应先手工确认挂载点剩余空间。
 
 ## 3. 场景 B：128 卡 local disk，没有共享文件系统
 

@@ -2,7 +2,7 @@
 
 ## Versioning
 
-shardferry uses SemVer. Pre-release versions such as `0.2.0-rc.1` are labeled
+shardferry uses SemVer. Pre-release versions such as `X.Y.Z-rc.N` are labeled
 as pre-releases and must not be described as production-ready.
 
 ## Before tagging

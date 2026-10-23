@@ -88,8 +88,9 @@ were skipped.
 - Update public docs when the user-visible contract changes.
 - Add a `CHANGELOG.md` entry for user-visible changes.
 - Call out breaking changes and required upgrade steps explicitly.
-- Use a Conventional Commit style subject such as
-  `feat: add readiness signal` or `docs: clarify recovery limits`.
+- Use a short, plain subject such as `Add readiness report validation` or
+  `Fix target commit recovery`. A `type:` prefix is optional; avoid emojis,
+  novelty formatting, and generated-looking titles.
 - Rebase or update the branch so CI runs against `main`; do not force-push
   someone else's branch.
 

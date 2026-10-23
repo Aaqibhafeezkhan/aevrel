@@ -1,4 +1,4 @@
-# shardferry 文档
+# Aevrel 文档
 
 公开文档只保留当前产品路径。内部验收、研究、历史设计和实验记录不放在
 公开仓库。
@@ -43,4 +43,4 @@
 ## 演示与发布
 
 - [Rescue Demo](RESCUE-DEMO.zh-CN.md)
-- [0.2.0 Release Notes](RELEASE-NOTES-0.2.0.md)
+- [0.3.0 Release Notes](RELEASE-NOTES-0.3.0.md)

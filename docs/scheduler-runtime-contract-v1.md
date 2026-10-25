@@ -67,7 +67,7 @@ it never means "fine".
 | `complete` | bool or null | the saved inventory is complete | copied from `readiness.complete` |
 | `fresh` | bool or null | the content is inside the freshness window | control plane decides; the envelope may only downgrade |
 | `loadable` | bool or null | a restore drill proved the bytes load | `null` = no verdict |
-| `movable` | bool or null | the checkpoint can move to the requested target | `null` = not evaluated |
+| `movable` | bool or null | `true` when the source is complete **and** the target world size is positive: a coarse filter, not a topology verdict | `null` = not evaluated; never claim mesh, placement or format compatibility. When the target world size differs from the source's rank count and no topology check ran, `TARGET_TOPOLOGY_UNVERIFIED` appears in `reasonCodes` while `movable` stays `true` |
 | `observedAt` | string | RFC3339 time the evidence was collected | required for record facts |
 | `source` | string | fact source, see above | required |
 | `reasonCodes` | []string | readiness reason codes, verbatim and in order | must match the readiness layer 1:1 |
@@ -195,13 +195,20 @@ misled.
 | Rule | Violation |
 | --- | --- |
 | `fresh=true` requires a loadability verdict (`loadable` is not null) | `FreshWithoutLoadabilityVerdict` |
-| `restoreMode=restore` requires a drill proof (`lastDrill` is not empty) | `RestoreWithoutDrillProof` |
+| `restoreMode=restore` requires a bound drill proof (`lastDrill` and `lastDrillDigest` are both non-empty) | `RestoreWithoutDrillProof` |
 | `estimatedRTOSeconds` is not null only when `complete=true` | `RTOWithoutCompleteInventory` |
 
 A fresh checkpoint with no drill verdict is not schedulable evidence: freshness
 alone cannot tell a scheduler whether the bytes will load. Such a set is
 invalid, so no envelope is published, and the binary protection label remains
 the only signal. This is the intended consequence, not an oversight.
+
+A drill *name* is a reference, not evidence. `RestoreWithoutDrillProof` fires
+unless the proof is bound to the checkpoint content the facts describe, which is
+what `lastDrillDigest` carries: without it the claim cannot be invalidated when
+the checkpoint is rewritten, so an operator reading `restoreMode=restore` would
+be trusting a name. Envelopes produced by Aevrel itself always carry both, since
+a successful drill writes `lastDrillVersion` and `lastDrillDigest` together.
 
 ### (b) Self-description
 

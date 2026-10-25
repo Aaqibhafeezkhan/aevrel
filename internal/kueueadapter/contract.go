@@ -29,6 +29,54 @@ const (
 	LabelDecisionSource      = "aevrel.dev/preemption-decision-source"
 )
 
+// Envelope fact labels. These carry the scheduler/runtime contract to consumers
+// that do not want to read CheckpointRecord objects. They are a projection of
+// authoritative readiness, never a second source of truth, and nothing in the
+// binary protection policy reads them.
+//
+// The contract names the namespace aevrel.dev/v1/*. A Kubernetes label key
+// cannot contain "/" after the prefix, so the namespace is realised as the
+// "v1-" leader on every fact name: aevrel.dev/v1-complete is the label form of
+// aevrel.dev/v1/complete. Label values must be label-safe too, which is why
+// SchemaLabelValue replaces SchemaVersion and the observation time uses
+// EnvelopeTimeLayout instead of RFC3339.
+const (
+	LabelEnvelopeSchemaVersion = "aevrel.dev/schema-version"
+	LabelEnvelopeComplete      = "aevrel.dev/v1-complete"
+	LabelEnvelopeFresh         = "aevrel.dev/v1-fresh"
+	LabelEnvelopeLoadable      = "aevrel.dev/v1-loadable"
+	LabelEnvelopeMovable       = "aevrel.dev/v1-movable"
+	LabelEnvelopeObservedAt    = "aevrel.dev/v1-observed-at"
+	LabelEnvelopeSource        = "aevrel.dev/v1-fact-source"
+	LabelEnvelopeReasonCodes   = "aevrel.dev/v1-reason-codes"
+	LabelEnvelopeRestoreMode   = "aevrel.dev/v1-restore-mode"
+	LabelEnvelopeEstimatedRTO  = "aevrel.dev/v1-estimated-rto-seconds"
+	LabelEnvelopeConformance   = "aevrel.dev/v1-envelope-conformance"
+
+	// EnvelopeTimeLayout is the label-safe UTC form of an observation time.
+	EnvelopeTimeLayout = "20060102T150405Z"
+
+	// FactValueUnknown is emitted instead of any default that could be read as
+	// a safe value. A missing RTO is "unknown", never "0".
+	FactValueUnknown = "unknown"
+)
+
+// EnvelopeLabels is every label the envelope may write. ClearFacts uses the
+// same list, so a withdrawn envelope cannot leave a stale fact behind.
+var EnvelopeLabels = []string{
+	LabelEnvelopeSchemaVersion,
+	LabelEnvelopeComplete,
+	LabelEnvelopeFresh,
+	LabelEnvelopeLoadable,
+	LabelEnvelopeMovable,
+	LabelEnvelopeObservedAt,
+	LabelEnvelopeSource,
+	LabelEnvelopeReasonCodes,
+	LabelEnvelopeRestoreMode,
+	LabelEnvelopeEstimatedRTO,
+	LabelEnvelopeConformance,
+}
+
 func IsProtectionEnabled(object metav1.Object) bool {
 	for _, source := range []map[string]string{
 		object.GetAnnotations(),

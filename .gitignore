@@ -1,0 +1,10 @@
+bin/
+*.test
+*.out
+.idea/
+.vscode/
+experiments/rig/.bin/
+experiments/rig/.cluster/
+experiments/rig/results.jsonl
+experiments/rig/cluster/bin/
+experiments/rig/cluster/kubeconfig

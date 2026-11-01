@@ -1,0 +1,12 @@
+# Three nodes so an arm can be pinned per node and preempted independently.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: ckpt-exp
+nodes:
+  - role: control-plane
+  - role: worker
+    labels:
+      arm: governed
+  - role: worker
+    labels:
+      arm: naive

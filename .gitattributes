@@ -1,0 +1,10 @@
+# Text files are normalized so a checkout on another machine is the same bytes.
+* text=auto eol=lf
+*.go   text diff=golang
+*.md   text diff=markdown
+*.sh   text
+*.json text
+*.jsonl text
+*.yaml text
+# Golden traces are gzipped fixtures, not text.
+*.gz   binary

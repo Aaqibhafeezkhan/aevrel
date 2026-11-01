@@ -1,0 +1,168 @@
+# F1 — preemption, announced by the platform, answered by the controller.
+#
+# Two real pods, one per node, each with its checkpoint directory on the *node's* disk so the evidence
+# outlives the pod. The governed pod runs three containers that share that directory: the observer
+# (writes world/), the controller (reads it, publishes a plan), the job (writes when asked). The naive
+# pod is what a team ships: the job on its own timer, plus a copy loop for rotation.
+#
+# Both arms write every five seconds — the naive job on its timer, the governed job on the window —
+# because the comparison must isolate the *response to the announcement*, not reward us for writing
+# more often. The nodes have 24 CPUs, so each job holds 12 and the preemptor asks for 13: it cannot be
+# scheduled until the low-priority pod is gone, which is what makes the platform do the preempting.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ckpt-exp
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ckpt-observer
+  namespace: ckpt-exp
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ckpt-observer
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ckpt-observer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: ckpt-observer
+subjects:
+  - kind: ServiceAccount
+    name: ckpt-observer
+    namespace: ckpt-exp
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: ckpt-low
+value: 100
+globalDefault: false
+description: the training job
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: ckpt-high
+value: 10000
+globalDefault: false
+description: the work that preempts it
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: governed
+  namespace: ckpt-exp
+  labels:
+    ckpt-governor.io/unit: "true"
+    arm: governed
+spec:
+  priorityClassName: ckpt-low
+  serviceAccountName: ckpt-observer
+  nodeSelector:
+    arm: governed
+  # Preemption honours the grace period, and thirty seconds would let even a lazy timer fire. Two
+  # seconds is what makes the announcement matter.
+  terminationGracePeriodSeconds: 2
+  containers:
+    - name: observer
+      image: ckpt-exp/job:local
+      command: ["/ckpt-observer"]
+      args:
+        # Inside the checkpoint directory, where the controller looks by convention
+        # (<dir>/world/<cluster>), and on the node's disk so the world outlives the pod.
+        - --world-dir=/ckpt/world
+        - --cluster=a
+        - --units=labeled
+        - --every=1s
+      volumeMounts:
+        - {name: ckpt, mountPath: /ckpt}
+    - name: controller
+      image: ckpt-exp/job:local
+      command: ["/ckptctl"]
+      args:
+        - run
+        - --dir=/ckpt
+        - --unit=ckpt-exp/governed
+        - --no-us=none
+        - --window=5s
+        - --every=100ms
+      volumeMounts:
+        - {name: ckpt, mountPath: /ckpt}
+    - name: job
+      image: ckpt-exp/job:local
+      command: ["/ckpttrainer"]
+      args:
+        - --dir=/ckpt
+        - --steps=100000
+        - --step-ms=20
+        - --write-ms=150
+        - --grace=2s
+      resources:
+        requests: {cpu: "12", memory: 1Gi}
+      volumeMounts:
+        - {name: ckpt, mountPath: /ckpt}
+  volumes:
+    - name: ckpt
+      hostPath: {path: /var/lib/ckpt-exp/governed, type: DirectoryOrCreate}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: naive
+  namespace: ckpt-exp
+  labels:
+    arm: naive
+spec:
+  priorityClassName: ckpt-low
+  nodeSelector:
+    arm: naive
+  terminationGracePeriodSeconds: 2
+  containers:
+    - name: job
+      image: ckpt-exp/job:local
+      command: ["/ckpttrainer"]
+      args:
+        - --dir=/ckpt
+        - --steps=100000
+        - --step-ms=20
+        - --write-ms=150
+        - --grace=2s
+        # The team's own habit, five seconds — long enough that a two-second grace period cannot
+        # reach the next tick, which is the whole point of the comparison.
+        - --save-every=5s
+      resources:
+        requests: {cpu: "12", memory: 1Gi}
+      volumeMounts:
+        - {name: ckpt, mountPath: /ckpt}
+    # And the copy loop somebody wrote to keep two copies: non-atomic, unverified.
+    - name: backup
+      image: busybox:1.36
+      command:
+        - sh
+        - -c
+        - |
+          mkdir -p /ckpt/.backup
+          while true; do
+            for d in /ckpt/step-*; do
+              [ -d "$d" ] || continue
+              n=$(basename "$d")
+              [ -d "/ckpt/.backup/$n" ] || cp -a "$d" "/ckpt/.backup/$n" 2>/dev/null || true
+            done
+            sleep 0.2
+          done
+      volumeMounts:
+        - {name: ckpt, mountPath: /ckpt}
+  volumes:
+    - name: ckpt
+      hostPath: {path: /var/lib/ckpt-exp/naive, type: DirectoryOrCreate}

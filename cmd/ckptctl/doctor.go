@@ -1,0 +1,121 @@
+package main
+
+import (
+	"flag"
+	"fmt"
+	"io"
+	"time"
+
+	"github.com/bolubo/checkpoint-governor/internal/observe"
+	"github.com/bolubo/checkpoint-governor/internal/produce"
+	"github.com/bolubo/checkpoint-governor/internal/produce/adapters"
+)
+
+// runDoctor asks every probe what it sees on this machine, and prints the answer with the two things
+// a person needs: why, and what would change it.
+//
+// It exists because the hardest question in this product is "is it watching me, or is it blind?" —
+// and the honest answer is a table, not a paragraph.
+func runDoctor(args []string, out io.Writer) int {
+	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
+	dir := fs.String("dir", "", "the checkpoint directory to inspect")
+	freeFactor := fs.Float64("free-factor", 2, "free space below this multiple of one checkpoint is at risk")
+	storeEvery := fs.Duration("store-every", 5*time.Second, "how often the storage conditions are read")
+	slowFactor := fs.Float64("slow-factor", 2, "how many times the job baseline counts as slow")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *dir == "" {
+		fmt.Fprint(out, "usage: ckptctl doctor --dir=<checkpointDir>\n")
+		return 2
+	}
+
+	now := time.Now()
+	// The checkpoint size is what the storage rule is measured against, so the doctor reads it the
+	// same way the loop does rather than guessing.
+	s, _, err := observe.Scan(observe.Request{Dir: *dir, UnitID: *dir, Now: now})
+	if err != nil {
+		fmt.Fprintf(out, "error: cannot read %s: %v\n", *dir, err)
+		return 1
+	}
+	env := produce.Env{Dir: *dir, Now: now, CheckpointBytes: s.CheckpointBytes}
+
+	// The doctor must see the same numbers the controller would: a threshold the file changed and
+	// the doctor ignored would make the table a lie.
+	cfg, _, err := adapters.LoadConfig(*dir)
+	if err != nil {
+		fmt.Fprintf(out, "error: %v\n", err)
+		return 2
+	}
+	// The operator's declaration decides whether a condition exists at all, so the doctor must read
+	// it before it builds the probes — otherwise the table describes a deployment nobody configured.
+	if cfg.Deployment, err = adapters.LoadDeployment(*dir); err != nil {
+		fmt.Fprintf(out, "error: %v\n", err)
+		return 2
+	}
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "free-factor":
+			cfg.FreeSpaceFactor = *freeFactor
+		case "store-every":
+			cfg.StoreEvery = *storeEvery
+		case "slow-factor":
+			cfg.SlowFactor = *slowFactor
+		}
+	})
+	cfg = cfg.WithWorld(*dir)
+	probes := adapters.All(cfg)
+	var ok, absent, unknown int
+	for _, p := range probes {
+		r := p.Read(env)
+		state, detail := describe(r)
+		// A condition whose answer is a declaration, not a measurement, says so in its own words.
+		if n, ok := capabilityNote(*dir, p.Name()); ok && r.State == produce.Absent {
+			detail = n
+		}
+		switch r.State {
+		case produce.Absent:
+			absent++
+		case produce.Unknown:
+			unknown++
+		default:
+			ok++
+		}
+		fmt.Fprintf(out, "%-24s %-8s every %-6s %s\n", p.Name(), state, p.Every(), detail)
+	}
+
+	fmt.Fprintf(out, "\ndoctor: %d probes · %d reading, %d absent, %d unknown\n", len(probes), ok, absent, unknown)
+	if s.CheckpointBytes <= 0 {
+		fmt.Fprintln(out, "note: no complete checkpoint yet, so the storage rule has no scale to measure against")
+	}
+	return 0
+}
+
+// capabilityNote maps a condition to the declaration that decides whether it exists at all.
+func capabilityNote(dir, condition string) (string, bool) {
+	switch condition {
+	case "risk.preempt":
+		return adapters.CapabilityNote(dir, adapters.CapPreemption)
+	case "risk.eviction-likely":
+		return adapters.CapabilityNote(dir, adapters.CapEviction)
+	}
+	return "", false
+}
+
+// describe turns a reading into the two words the table needs.
+func describe(r produce.Reading) (state, detail string) {
+	switch r.State {
+	case produce.Absent:
+		return "absent", "this environment does not have it"
+	case produce.Unknown:
+		if r.Err != nil {
+			return "unknown", "cannot read it: " + r.Err.Error()
+		}
+		return "unknown", "cannot read it"
+	default:
+		if r.Value {
+			return "1", "firing"
+		}
+		return "0", "not firing"
+	}
+}

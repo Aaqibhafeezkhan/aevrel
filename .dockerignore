@@ -1,0 +1,5 @@
+.git
+experiments/rig/.bin
+experiments/rig/.cluster
+experiments/rig/cluster/bin
+experiments/rig/cluster/kubeconfig

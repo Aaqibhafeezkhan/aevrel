@@ -30,5 +30,8 @@ step "make exp" make exp
 step "make demo" make demo
 step "make install-smoke" make install-smoke
 step "make spot" make spot
+step "make resume" make resume
+step "make py" make py
+step "make drill" make drill
 
-printf '\nall six steps of the CI gate passed: this push should not go red\n'
+printf '\nall nine steps of the CI gate passed: this push should not go red\n'

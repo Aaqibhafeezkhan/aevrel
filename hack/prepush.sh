@@ -28,5 +28,7 @@ step "make check" make check
 step "make e2e" make e2e
 step "make exp" make exp
 step "make demo" make demo
+step "make install-smoke" make install-smoke
+step "make spot" make spot
 
-printf '\nall four steps of the CI gate passed: this push should not go red\n'
+printf '\nall six steps of the CI gate passed: this push should not go red\n'

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bolubo/checkpoint-governor/internal/advise"
 	"github.com/bolubo/checkpoint-governor/internal/produce/adapters"
 )
 
@@ -22,9 +23,31 @@ func viewWorld(dir string, now time.Time) (adapters.UnitView, adapters.Config, b
 	}
 	cfg.Deployment = dep
 	cfg = cfg.WithWorld(dir)
-	v, err := adapters.Project(cfg.WorldDir, cfg.Cluster, cfg.UnitID, dep, now)
-	if err != nil || !v.SummaryPresent {
-		return adapters.UnitView{}, cfg, false
+	base := cfg.UnitID
+
+	// The published plan names the unit identity this run was given; the directory's basename is the
+	// fallback for a run that was never given one. A cluster unit (`namespace/pod`) is only found by
+	// the plan's id, and a local run is only found by the basename — the display tries them in that
+	// order rather than guessing which kind of deployment this is (0030).
+	var ids []string
+	if d, ok := advise.LastDecision(dir); ok && d.UnitID != "" && d.UnitID != base {
+		ids = append(ids, d.UnitID)
+	}
+	ids = append(ids, base)
+
+	v := adapters.UnitView{}
+	for _, id := range ids {
+		candidate, err := adapters.Project(cfg.WorldDir, cfg.Cluster, id, dep, now)
+		if err != nil {
+			return adapters.UnitView{}, cfg, false
+		}
+		if !candidate.SummaryPresent {
+			return adapters.UnitView{}, cfg, false
+		}
+		v, cfg.UnitID = candidate, id
+		if v.UnitPresent || v.Reclaim != nil {
+			break
+		}
 	}
 	return v, cfg, true
 }
@@ -63,7 +86,11 @@ func worldBlock(out io.Writer, dir string, now time.Time) {
 	if v.Stale {
 		fmt.Fprintln(out, "           STALE: past the limit the observer declared — decisions cannot use these numbers")
 	}
-	if v.Announced {
+	if v.Reclaim != nil {
+		// The gate's record is the announcement with lead time, and it says who it is holding: a
+		// person reading `explain` must be able to see that a write is being asked for now.
+		fmt.Fprintf(out, "basis      announcement: %s\n", v.Reclaim.Line())
+	} else if v.Announced {
 		fmt.Fprintln(out, "basis      announcement: the platform has already decided (deletion timestamp or eviction event)")
 	} else if fired, _ := adapters.EvictionSignals(cfg.WorldDir, cfg.Cluster, cfg.UnitID, cfg.Deployment, cfg.EvictionLineOrDefault(), now); len(fired) > 0 {
 		fmt.Fprintf(out, "basis      inference: %s (this is a guess, and a capability can turn it off)\n",

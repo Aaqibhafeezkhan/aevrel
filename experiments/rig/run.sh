@@ -68,6 +68,25 @@ await_midwrite() {
 	return 1
 }
 
+# await_torn <dir> <timeout-ms> -> the job is writing and the copy loop has already taken that
+# half-written directory. This is the state in which a stop costs the naive arm work: the copy on
+# disk is torn, and the job's own write finishing later cannot repair it. Waiting for it makes the
+# round deterministic — without it, a stop that lands after the copier took a *complete* copy leaves
+# the baseline whole, and the round measures nothing.
+await_torn() {
+	tries=$(( $2 / 20 ))
+	i=0
+	while [ "$i" -lt "$tries" ]; do
+		d=$(newest_step "$1")
+		if [ -n "$d" ] && [ ! -f "$d/manifest.json" ] && [ -d "$1/.backup/$(basename "$d")" ]; then
+			return 0
+		fi
+		sleep 0.02
+		i=$((i + 1))
+	done
+	return 1
+}
+
 # await_sealed <dir> <timeout-ms> -> once the job has at least one intact checkpoint
 await_sealed() {
 	tries=$(( $2 / 20 ))
@@ -133,27 +152,34 @@ scenario_kill() {
 # --- user-stop --------------------------------------------------------------
 #
 # X3. SIGTERM. The naive arm has no protocol for a stop: it exits the moment it is told, so a write
-# that takes 150ms cannot finish and the last period is lost. The governed job waits for the
+# that takes 400ms cannot finish and the last period is lost. The governed job waits for the
 # controller's `may-exit`, which is only written after the final write has landed.
+#
+# The stop is aimed at the state where the naive arm has already lost: a write in flight *and* the
+# copy loop's snapshot of that half-written directory on disk. Waiting for the governed arm to seal
+# first used to be enough to make the round vacuous on a loaded machine: the copier got its next
+# snapshot after the naive write had completed, so the baseline survived the stop whole.
 scenario_stop() {
 	step_ms=20
+	write_ms=400
 	naive="$TMP/stop/naive"
 	gov="$TMP/stop/gov"
 	mkdir -p "$naive" "$gov"
 
-	"$BIN/ckpttrainer" --dir "$naive" --steps 100000 --step-ms $step_ms --write-ms 150 \
+	"$BIN/ckpttrainer" --dir "$naive" --steps 100000 --step-ms $step_ms --write-ms $write_ms \
 		--grace 0s --save-every 1s >/dev/null 2>&1 &
 	naive_job=$!
-	sh "$RIG/baseline.sh" --dir "$naive" --period 0.5 --mode "${BASELINE:-b3}" >/dev/null 2>&1 &
+	sh "$RIG/baseline.sh" --dir "$naive" --period 0.1 --mode "${BASELINE:-b3}" >/dev/null 2>&1 &
 	naive_copy=$!
 
 	"$BIN/ckptctl" run --dir "$gov" --no-us=none --window=400ms --every=40ms >/dev/null 2>&1 &
 	gov_ctl=$!
-	"$BIN/ckpttrainer" --dir "$gov" --steps 100000 --step-ms $step_ms --write-ms 150 --grace 5s >/dev/null 2>&1 &
+	"$BIN/ckpttrainer" --dir "$gov" --steps 100000 --step-ms $step_ms --write-ms $write_ms --grace 5s >/dev/null 2>&1 &
 	gov_job=$!
 
-	await_sealed "$naive" 3000 || true
-	await_sealed "$gov" 3000 || true
+	if ! await_torn "$naive" 5000; then
+		echo "note: the baseline never copied a write in flight within 5s; the round is vacuous" >&2
+	fi
 
 	kill -TERM "$naive_job" "$gov_job" 2>/dev/null || true
 
@@ -175,9 +201,52 @@ scenario_stop() {
 
 # --- disk-full --------------------------------------------------------------
 #
-# X2. An 8 MiB tmpfs is the limit: real, and instant. The claim is deliberately not "lost seconds" —
-# a compressed timer loses little by construction — but how much room is left when the job dies and
-# whether the newest copy still verifies.
+# X2. An 8 MiB volume is the limit. The claim is deliberately not "lost seconds" — a compressed
+# timer loses little by construction — but how much room is left when the job dies and whether the
+# newest copy still verifies.
+#
+#   VOLUME=tmpfs (default)  a size-limited tmpfs: real size accounting, no disk timing
+#   VOLUME=loop             a loopback ext4 image: a real file system, real fsync and real ENOSPC
+#
+# The loop variant is the P9 row's "physical disk volume". It still needs root, and the loop device
+# is detached by cleanup even when an assertion exits first.
+VOLUME=${VOLUME:-tmpfs}
+LOOP_MB=${LOOP_MB:-12}
+STORE_EVERY=${STORE_EVERY:-200ms}
+
+mount_volume() {
+	mnt=$1
+	case "$VOLUME" in
+	tmpfs)
+		mount -t tmpfs -o size=8m tmpfs "$mnt" || return 1
+		;;
+	loop)
+		img="$mnt.img"
+		dd if=/dev/zero of="$img" bs=1M count=$LOOP_MB status=none || return 1
+		l=$(losetup -f) || return 1
+		[ -n "$l" ] || return 1
+		losetup "$l" "$img" || return 1
+		if ! mkfs.ext4 -q "$l" 2>/dev/null || ! mount "$l" "$mnt"; then
+			losetup -d "$l" 2>/dev/null || true
+			return 1
+		fi
+		DISK_LOOPS="$DISK_LOOPS $l"
+		;;
+	*)
+		echo "unknown VOLUME=$VOLUME (tmpfs or loop)" >&2
+		return 1
+		;;
+	esac
+	DISK_MOUNTS="$DISK_MOUNTS $mnt"
+}
+
+unmount_volumes() {
+	for m in $DISK_MOUNTS; do umount "$m" 2>/dev/null || true; done
+	for l in $DISK_LOOPS; do losetup -d "$l" 2>/dev/null || true; done
+	DISK_MOUNTS=""
+	DISK_LOOPS=""
+}
+
 scenario_disk_full() {
 	step_ms=20
 	shard=$((1024 * 1024))
@@ -186,12 +255,12 @@ scenario_disk_full() {
 	naive_mnt="$TMP/naive-vol"
 	gov_mnt="$TMP/gov-vol"
 	mkdir -p "$naive_mnt" "$gov_mnt"
-	if ! mount -t tmpfs -o size=8m tmpfs "$naive_mnt" 2>/dev/null; then
-		echo "SKIP disk-full: cannot mount a tmpfs here (needs root)"
-		record l1 disk-full naive '{"ok":-1,"skipped":"no tmpfs"}'
+	if ! mount_volume "$naive_mnt" 2>/dev/null; then
+		echo "SKIP disk-full: cannot mount a $VOLUME volume here (needs root)"
+		record l1 disk-full naive '{"ok":-1,"skipped":"no volume"}'
 		return 0
 	fi
-	mount -t tmpfs -o size=8m tmpfs "$gov_mnt"
+	mount_volume "$gov_mnt"
 
 	"$BIN/ckpttrainer" --dir "$naive_mnt" --steps 100000 --step-ms $step_ms --write-ms 40 \
 		--shard-bytes $shard --ranks 2 --save-every 400ms >/dev/null 2>&1 &
@@ -199,20 +268,26 @@ scenario_disk_full() {
 	sh "$RIG/baseline.sh" --dir "$naive_mnt" --period 0.2 --mode "${BASELINE:-b3}" >/dev/null 2>&1 &
 	naive_copy=$!
 
+	# The storage condition is read every 200ms here, not at the 5s default: the round is seconds
+	# long, and a volume this small can be consumed inside one default interval. The trigger is the
+	# product's own rule; only its cadence is scaled to the experiment. STORE_EVERY=5s reproduces
+	# that boundary.
 	"$BIN/ckptctl" run --dir "$gov_mnt" --no-us=none --window=400ms --every=40ms \
-		--free-factor=3 >/dev/null 2>&1 &
+		--store-every=$STORE_EVERY --free-factor=3 >/dev/null 2>&1 &
 	gov_ctl=$!
 	"$BIN/ckpttrainer" --dir "$gov_mnt" --steps 100000 --step-ms $step_ms --write-ms 40 \
 		--shard-bytes $shard --ranks 2 >/dev/null 2>&1 &
 	gov_job=$!
 
+	# The naive arm is what has to fill its volume; a real file system's fsync makes that slower than
+	# tmpfs, so the loop volume gets a longer wall clock for the same fault.
+	tries=200
+	[ "$VOLUME" = "loop" ] && tries=2000
 	i=0
-	while [ "$i" -lt 200 ]; do
+	while [ "$i" -lt "$tries" ]; do
 		n=$(tmpfree "$naive_mnt")
-		g=$(tmpfree "$gov_mnt")
 		case "$n" in ''|*[!0-9]*) n=999999 ;; esac
-		case "$g" in ''|*[!0-9]*) g=999999 ;; esac
-		if [ "$n" -lt 64 ] || [ "$g" -lt 64 ]; then break; fi
+		if [ "$n" -lt 64 ]; then break; fi
 		sleep 0.02
 		i=$((i + 1))
 	done
@@ -225,16 +300,15 @@ scenario_disk_full() {
 	case "$n_free" in ''|*[!0-9]*) n_free=0 ;; esac
 	case "$g_free" in ''|*[!0-9]*) g_free=0 ;; esac
 
-	n=$(report_arm disk-full naive "$naive_mnt" "$naive_mnt/.backup" $step_ms ",\"free_kb\":$n_free")
-	g=$(report_arm disk-full governed "$gov_mnt" "$gov_mnt" $step_ms ",\"free_kb\":$g_free")
+	n=$(report_arm disk-full naive "$naive_mnt" "$naive_mnt/.backup" $step_ms ",\"free_kb\":$n_free,\"volume\":\"$VOLUME\"")
+	g=$(report_arm disk-full governed "$gov_mnt" "$gov_mnt" $step_ms ",\"free_kb\":$g_free,\"volume\":\"$VOLUME\"")
 	set -- $n; naive_ok=$1
 	set -- $g; gov_ok=$1
 
-	umount "$naive_mnt" 2>/dev/null || true
-	umount "$gov_mnt" 2>/dev/null || true
+	unmount_volumes
 
-	printf 'exp[l1] %-18s naive: free %5sKiB intact=%s · governed: free %5sKiB intact=%s\n' \
-		disk-full "$n_free" "$naive_ok" "$g_free" "$gov_ok"
+	printf 'exp[l1] %-18s (%s) naive: free %5sKiB intact=%s · governed: free %5sKiB intact=%s\n' \
+		disk-full "$VOLUME" "$n_free" "$naive_ok" "$g_free" "$gov_ok"
 	bad=0
 	if [ "$n_free" -ge 64 ]; then
 		echo "FAIL disk-full: the naive arm never filled its volume (${n_free}KiB left)"
